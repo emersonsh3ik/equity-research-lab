@@ -114,6 +114,20 @@ CREATE TABLE IF NOT EXISTS backtest_signals (
 
 CREATE SEQUENCE IF NOT EXISTS backtest_signal_id_seq START 1;
 
+CREATE TABLE IF NOT EXISTS backtest_qualifiers (
+    qualifier_id BIGINT PRIMARY KEY,
+    run_id BIGINT,
+    signal_date DATE,
+    universe VARCHAR,
+    ticker VARCHAR,
+    sector VARCHAR,
+    close DOUBLE,
+    rsi14 DOUBLE,
+    composite_score DOUBLE
+);
+
+CREATE SEQUENCE IF NOT EXISTS backtest_qualifier_id_seq START 1;
+
 CREATE TABLE IF NOT EXISTS backtest_outcomes (
     backtest_outcome_id BIGINT PRIMARY KEY,
     backtest_signal_id BIGINT,
@@ -459,6 +473,8 @@ def run_backtest(
     universe_map = {row["ticker"]: row["universe"] for row in universe.iter_rows(named=True)}
     sector_map = {row["ticker"]: row.get("sector") for row in universe.iter_rows(named=True)}
 
+    save_qualifiers = config.label.endswith("_with_qualifiers") or True  # sempre salva
+
     for bday in tqdm(business_days, desc="Walk-forward"):
         # Pra cada ticker, calcula indicadores no dia
         candidates = []
@@ -494,6 +510,26 @@ def run_backtest(
 
         if not candidates:
             continue
+
+        # ===== Salva TODOS os qualifiers do dia (filters-only sem ranking) =====
+        if save_qualifiers:
+            for c in candidates:
+                q_id = conn.execute(
+                    "SELECT nextval('backtest_qualifier_id_seq')"
+                ).fetchone()[0]
+                conn.execute(
+                    """
+                    INSERT INTO backtest_qualifiers (
+                        qualifier_id, run_id, signal_date, universe, ticker,
+                        sector, close, rsi14, composite_score
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        q_id, run_id, bday, c["universe"], c["ticker"],
+                        c["sector"], c["close"], c["rsi14"], c["composite_score"],
+                    ],
+                )
 
         # Ordena e pega top N por universo
         for uni_flag in ["A", "B"]:

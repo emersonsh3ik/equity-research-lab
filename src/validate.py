@@ -376,10 +376,21 @@ def analyze_run(run_id: int) -> dict:
 # ============================================================
 
 
-def run_random_baseline(run_id: int, n_random_portfolios: int = 100) -> dict:
+def run_random_baseline(
+    run_id: int,
+    n_random_portfolios: int = 100,
+    mode: str = "qualifiers",
+) -> dict:
     """
-    Gera N portfólios aleatórios com mesmas datas e universo do run,
-    computa outcomes e estatísticas pra cada um. Retorna distribuição.
+    Gera N portfólios aleatórios pra comparar com o screener.
+
+    Modos:
+      - "subset": random dos tickers que o screener pegou em algum dia (atual, enviesado)
+      - "full": random do universo INTEIRO de NYSE+NASDAQ (universe.parquet)
+      - "qualifiers": random dos tickers que passaram nos filtros NO MESMO DIA do signal
+                      (o mais rigoroso — isola ranking do filtros)
+
+    Retorna distribuição agregada.
     """
     if not DB_PATH.exists():
         sys.exit(1)
@@ -402,15 +413,48 @@ def run_random_baseline(run_id: int, n_random_portfolios: int = 100) -> dict:
         logger.error(f"Sem signals pra run_id={run_id}")
         return {}
 
-    # Pega universo de tickers que foram usados no backtest
-    tickers_used = (
-        conn.execute(
-            "SELECT DISTINCT ticker FROM backtest_signals WHERE run_id = ?",
-            [run_id],
+    # Define universo de tickers conforme o modo
+    if mode == "subset":
+        tickers_used = (
+            conn.execute(
+                "SELECT DISTINCT ticker FROM backtest_signals WHERE run_id = ?",
+                [run_id],
+            )
+            .fetchdf()["ticker"]
+            .tolist()
         )
-        .fetchdf()["ticker"]
-        .tolist()
-    )
+        logger.info(f"Mode 'subset': {len(tickers_used)} tickers usados pelo screener")
+    elif mode == "full":
+        universe = pl.read_parquet(PROJECT_DIR / "data" / "universe.parquet")
+        tickers_used = universe["ticker"].to_list()
+        logger.info(f"Mode 'full': {len(tickers_used)} tickers do universo completo")
+    elif mode == "qualifiers":
+        # Random pega tickers QUE PASSARAM FILTROS NO MESMO DIA (mais rigoroso)
+        qualifiers_check = conn.execute(
+            "SELECT COUNT(*) FROM backtest_qualifiers WHERE run_id = ?",
+            [run_id],
+        ).fetchone()[0]
+        if qualifiers_check == 0:
+            logger.error(
+                f"Modo 'qualifiers' requer que o backtest tenha salvo qualifiers. "
+                f"Run {run_id} não tem. Re-rode o backtest com versão atualizada."
+            )
+            conn.close()
+            return {}
+        tickers_used = (
+            conn.execute(
+                "SELECT DISTINCT ticker FROM backtest_qualifiers WHERE run_id = ?",
+                [run_id],
+            )
+            .fetchdf()["ticker"]
+            .tolist()
+        )
+        logger.info(
+            f"Mode 'qualifiers': {len(tickers_used)} tickers únicos que passaram filtros"
+        )
+    else:
+        logger.error(f"Modo inválido: {mode}")
+        sys.exit(1)
 
     # E o number de sinais por (data, universo) pra replicar
     counts = (
@@ -497,12 +541,35 @@ def run_random_baseline(run_id: int, n_random_portfolios: int = 100) -> dict:
     logger.info(f"Rodando {n_random_portfolios} portfólios aleatórios...")
     from tqdm import tqdm
 
+    # No modo 'qualifiers', cacheamos quais tickers passaram filtros em cada dia
+    # (reabre conexão pois pode ter sido fechada anteriormente)
+    qualifiers_by_date = {}
+    if mode == "qualifiers":
+        conn2 = duckdb.connect(str(DB_PATH), read_only=True)
+        try:
+            q_df = conn2.execute(
+                "SELECT signal_date, universe, ticker FROM backtest_qualifiers WHERE run_id = ?",
+                [run_id],
+            ).df()
+        finally:
+            conn2.close()
+        for (d, u), g in q_df.groupby(["signal_date", "universe"]):
+            qualifiers_by_date[(d, u)] = g["ticker"].tolist()
+
     for portfolio_id in tqdm(range(n_random_portfolios), desc="Random portfolios"):
         for _, row in counts.iterrows():
             sig_date = row["signal_date"]
+            uni = row["universe"]
             n_to_pick = int(row["n"])
-            # Pickar tickers aleatórios
-            available = [t for t in tickers_used if t in histories]
+
+            # Universo de escolha conforme o modo
+            if mode == "qualifiers":
+                # Random APENAS dos tickers que passaram filtros nesse dia/universo
+                pool = qualifiers_by_date.get((sig_date, uni), [])
+                available = [t for t in pool if t in histories]
+            else:
+                available = [t for t in tickers_used if t in histories]
+
             if len(available) < n_to_pick:
                 continue
             chosen = rng.choice(available, size=n_to_pick, replace=False)
@@ -652,6 +719,13 @@ def main():
         help="Roda baseline aleatório pra comparar",
     )
     parser.add_argument(
+        "--baseline-mode",
+        choices=["subset", "full", "qualifiers"],
+        default="qualifiers",
+        help="Modo: 'subset'=tickers usados pelo screener, 'full'=universo inteiro, "
+             "'qualifiers'=qualifiers do mesmo dia (mais rigoroso, default)",
+    )
+    parser.add_argument(
         "--n-random",
         type=int,
         default=20,
@@ -699,8 +773,13 @@ def main():
 
     # Fase 2: random baseline
     if args.random_baseline:
-        print(f"\n🎲 Rodando random baseline ({args.n_random} portfólios)...")
-        random_summary = run_random_baseline(args.run_id, args.n_random)
+        print(
+            f"\n🎲 Rodando random baseline (mode={args.baseline_mode}, "
+            f"{args.n_random} portfólios)..."
+        )
+        random_summary = run_random_baseline(
+            args.run_id, args.n_random, mode=args.baseline_mode
+        )
         print("\nResultado do baseline aleatório:")
         for win, stats in random_summary.items():
             print(f"\n  {win}:")
