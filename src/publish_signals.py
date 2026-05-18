@@ -61,15 +61,42 @@ def publish_today():
 
         # Colunas opcionais (do enrich_signals.py)
         optional_cols = [
+            # Valuation original
             "pe_ttm", "pe_forward", "eps_ttm", "eps_forward",
-            "dividend_yield", "profit_margin", "operating_margin", "gross_margin",
+            "dividend_yield",
+            # Margens
+            "profit_margin", "operating_margin", "gross_margin", "ebitda_margin",
+            # Rentabilidade / Balanço
             "debt_to_equity", "return_on_equity",
+            "current_ratio", "quick_ratio",
+            # Crescimento
             "revenue_growth_yoy", "earnings_growth_yoy",
             "next_earnings_date",
+            # Short
             "short_percent_of_float", "short_ratio",
+            # Insider
             "insider_net_shares_6m", "insider_net_value_6m",
             "insider_n_buys_6m", "insider_n_sells_6m",
             "insider_top_sellers", "insider_last_transaction_date",
+            # Tier 1 — Valuation expandido
+            "enterprise_value", "ev_to_ebitda", "ev_to_revenue",
+            "price_to_book", "book_value", "ebitda",
+            "free_cash_flow", "operating_cash_flow",
+            # Tier 1 — Balanço
+            "total_cash", "total_debt", "net_debt",
+            # Tier 1 — Mercado e risco
+            "beta", "change_52w_pct",
+            "float_shares", "shares_outstanding",
+            # Tier 1 — Analyst coverage
+            "analyst_rating", "analyst_count",
+            "target_mean_price", "target_high_price", "target_low_price",
+            "target_upside_pct",
+            # Tier 1 — Ownership
+            "held_pct_insiders", "held_pct_institutions",
+            # Tier 2
+            "earnings_beats_4q", "earnings_avg_surprise_pct",
+            "analyst_upgrades_90d", "analyst_downgrades_90d", "analyst_revisions_net",
+            "top_institutional_holder",
         ]
 
         cols = [c for c in base_cols if c in existing_cols] + [
