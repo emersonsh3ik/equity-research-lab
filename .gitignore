@@ -11,10 +11,14 @@ __pycache__/
 .Python
 *.egg-info/
 
-# Data (NUNCA versionar — fica no OneDrive)
+# Data local (parquets, banco) — não versionar
 data/
 logs/
 reports/
+
+# IMPORTANTE: published/ NÃO está aqui — essa pasta É versionada.
+# Os sinais diários em JSON ficam em published/ e vão pro GitHub pra
+# servir de fonte de dados pro Cowork scheduled task.
 
 # Secrets
 .env

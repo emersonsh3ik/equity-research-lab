@@ -199,15 +199,18 @@ def fetch_us_ticker_universe() -> pl.DataFrame:
     return universe
 
 
-def fetch_market_caps(tickers: list[str], max_workers: int = 8) -> pl.DataFrame:
+def fetch_market_caps(tickers: list[str], max_workers: int = 2) -> pl.DataFrame:
     """
     Busca market cap via yfinance para cada ticker.
     Retorna DataFrame: ticker, market_cap_usd.
 
     Esta é uma operação custosa (1 chamada por ticker). Roda só ao
     rebaixar o universo (--refresh-universe), depois fica em cache.
+
+    yfinance 1.3 com curl_cffi tem rate limits agressivos — usar
+    no máximo 2 workers em paralelo para evitar bloqueio.
     """
-    logger.info(f"Buscando market caps de {len(tickers)} tickers...")
+    logger.info(f"Buscando market caps de {len(tickers)} tickers (parallelismo={max_workers})...")
     results = []
 
     def _fetch_one(ticker: str) -> dict | None:
@@ -272,45 +275,80 @@ def assign_universes(universe_df: pl.DataFrame) -> pl.DataFrame:
 
 
 def download_price_history(
-    tickers: list[str], days: int = 252, max_workers: int = 10
+    tickers: list[str], days: int = 252, batch_size: int = 100
 ) -> pl.DataFrame:
-    """Baixa histórico via yfinance em paralelo."""
+    """
+    Baixa histórico via yfinance usando yf.download em batches.
+
+    yf.download é a forma recomendada do yfinance para downloads em massa
+    porque tem rate limiting interno e processa múltiplos tickers numa
+    única chamada HTTP.
+    """
     end_date = datetime.now()
     start_date = end_date - timedelta(days=int(days * 1.5))
 
-    logger.info(f"Baixando preços de {len(tickers)} tickers...")
+    logger.info(f"Baixando preços de {len(tickers)} tickers em batches de {batch_size}...")
     results = []
-    failed = []
+    failed_count = 0
 
-    def _fetch_one(ticker: str) -> pl.DataFrame | None:
+    batches = [tickers[i : i + batch_size] for i in range(0, len(tickers), batch_size)]
+
+    for batch in tqdm(batches, desc="Batches de preços"):
         try:
-            hist = yf.Ticker(ticker).history(
-                start=start_date, end=end_date, auto_adjust=True, actions=False
+            data = yf.download(
+                tickers=batch,
+                start=start_date,
+                end=end_date,
+                auto_adjust=True,
+                actions=False,
+                threads=True,
+                progress=False,
+                group_by="ticker",
             )
-            if hist.empty or len(hist) < 50:
-                return None
-            df = pl.from_pandas(hist.reset_index())
-            df = df.with_columns(pl.lit(ticker).alias("ticker"))
-            df = df.rename({c: c.lower() for c in df.columns})
-            return df
-        except Exception:
-            return None
 
-    with ThreadPoolExecutor(max_workers=max_workers) as exe:
-        futures = {exe.submit(_fetch_one, t): t for t in tickers}
-        for fut in tqdm(as_completed(futures), total=len(tickers), desc="Preços"):
-            ticker = futures[fut]
-            df = fut.result()
-            if df is not None:
-                results.append(df)
-            else:
-                failed.append(ticker)
+            if data is None or data.empty:
+                failed_count += len(batch)
+                continue
 
-    logger.info(f"Preços: sucesso {len(results)}, falhou {len(failed)}")
+            # Para batch com 1 ticker, yf.download retorna DataFrame simples
+            # Para múltiplos, retorna MultiIndex columns
+            for ticker in batch:
+                try:
+                    if len(batch) == 1:
+                        ticker_data = data
+                    else:
+                        if ticker not in data.columns.get_level_values(0):
+                            failed_count += 1
+                            continue
+                        ticker_data = data[ticker]
+
+                    # Remove linhas com NaN (tickers que não retornaram dados)
+                    ticker_data = ticker_data.dropna(how="all")
+                    if ticker_data.empty or len(ticker_data) < 50:
+                        failed_count += 1
+                        continue
+
+                    df = pl.from_pandas(ticker_data.reset_index())
+                    df = df.with_columns(pl.lit(ticker).alias("ticker"))
+                    df = df.rename({c: c.lower() for c in df.columns})
+                    results.append(df)
+                except Exception:
+                    failed_count += 1
+                    continue
+
+            # Pequeno delay entre batches para evitar rate limit
+            time.sleep(0.5)
+
+        except Exception as e:
+            logger.warning(f"Falha no batch ({len(batch)} tickers): {e}")
+            failed_count += len(batch)
+            continue
+
+    logger.info(f"Preços: sucesso {len(results)}, falhou {failed_count}")
     if not results:
         return pl.DataFrame()
 
-    return pl.concat(results, how="diagonal")
+    return pl.concat(results, how="diagonal_relaxed")
 
 
 # =====================================================================
@@ -364,7 +402,7 @@ def compute_indicators(df: pl.DataFrame) -> pl.DataFrame:
         )
         results.append(group)
 
-    return pl.concat(results, how="diagonal") if results else pl.DataFrame()
+    return pl.concat(results, how="diagonal_relaxed") if results else pl.DataFrame()
 
 
 def _rsi_native(close, period=14):
@@ -611,7 +649,16 @@ def _save_signals_to_db(
             """
         )
 
-        signals = signals_df.with_row_count("rank_position", offset=1)
+        # Apaga sinais antigos para esta data e universo (idempotência:
+        # permite rodar o screener várias vezes no mesmo dia sem violar
+        # constraint UNIQUE (signal_date, ticker))
+        deleted = conn.execute(
+            "DELETE FROM signals WHERE signal_date = ? AND universe = ?",
+            [signal_date, universe],
+        )
+        logger.info(f"Sinais antigos removidos para {signal_date}/Universe {universe}")
+
+        signals = signals_df.with_row_index("rank_position", offset=1)
         signals = signals.with_columns(
             pl.lit(signal_date).alias("signal_date"),
             pl.lit(universe).alias("universe"),
