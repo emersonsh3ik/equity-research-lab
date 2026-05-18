@@ -69,3 +69,7 @@ Plano de 8 semanas em [`06_roadmap_8_semanas.md`](./06_roadmap_8_semanas.md).
 ## Status
 
 🚧 Em desenvolvimento — Semana 0 (setup inicial).
+
+## Histórico
+
+- 2026-05-17 — Setup inicial: repositório criado, arquitetura definida, scripts base versionados.
