@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -299,9 +300,18 @@ def enrich_signals_file(signals_path: Path, conn) -> int:
 
     Retorna o número de tickers processados.
     """
+    # Extrai signal_date do nome do arquivo (formato: YYYY-MM-DD_universe_X.parquet)
+    date_match = re.match(
+        r"(\d{4}-\d{2}-\d{2})_universe_[AB]\.parquet", signals_path.name
+    )
+    if not date_match:
+        logger.error(f"Não consegui extrair data do nome do arquivo: {signals_path.name}")
+        return 0
+    signal_date = date_match.group(1)
+
     df = pl.read_parquet(signals_path)
     n = len(df)
-    logger.info(f"Enriquecendo {n} sinais em {signals_path.name}")
+    logger.info(f"Enriquecendo {n} sinais em {signals_path.name} (signal_date={signal_date})")
 
     enriched_rows = []
     for row in tqdm(df.iter_rows(named=True), total=n, desc=signals_path.stem):
@@ -311,7 +321,10 @@ def enrich_signals_file(signals_path: Path, conn) -> int:
 
         # Atualiza DB
         enrichment = {**fundamentals, **insider}
-        update_db_row(conn, ticker, str(row.get("signal_date", "")), enrichment)
+        try:
+            update_db_row(conn, ticker, signal_date, enrichment)
+        except Exception as e:
+            logger.warning(f"Update DB falhou para {ticker}: {e}")
 
         merged = {**row, **fundamentals, **insider}
         enriched_rows.append(merged)
