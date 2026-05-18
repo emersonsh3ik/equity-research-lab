@@ -23,9 +23,9 @@ anthropic>=0.42
 # Se instalar: brew install ta-lib (Mac) ou apt install libta-lib-dev (Linux)
 # ta-lib-binary==0.4.32
 
-# Dashboard (opcional — semana 6)
-# streamlit==1.41.1
-# altair==5.5.0
+# Dashboard
+streamlit>=1.41
+altair>=5.5
 
 # Telegram bot (opcional — semana 8)
 # python-telegram-bot==21.10
