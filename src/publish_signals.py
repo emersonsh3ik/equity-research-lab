@@ -46,14 +46,39 @@ def publish_today():
 
     conn = duckdb.connect(str(DB_PATH), read_only=True)
     try:
+        # Pega todas as colunas que existem na tabela (o enrich pode ter adicionado novas)
+        cols_info = conn.execute("PRAGMA table_info(signals)").fetchall()
+        existing_cols = [c[1] for c in cols_info]
+
+        # Colunas obrigatórias (sempre devem existir)
+        base_cols = [
+            "signal_date", "ticker", "universe", "sector", "market_cap_usd",
+            "close", "vol_avg_20", "rsi14", "mm50", "mm200",
+            "high_52w", "low_52w", "pct_below_52w_high", "pct_above_52w_low",
+            "momentum_score", "setup_score", "composite_score", "rank_position",
+            "screener_version",
+        ]
+
+        # Colunas opcionais (do enrich_signals.py)
+        optional_cols = [
+            "pe_ttm", "pe_forward", "eps_ttm", "eps_forward",
+            "dividend_yield", "profit_margin", "operating_margin", "gross_margin",
+            "debt_to_equity", "return_on_equity",
+            "revenue_growth_yoy", "earnings_growth_yoy",
+            "next_earnings_date",
+            "short_percent_of_float", "short_ratio",
+            "insider_net_shares_6m", "insider_net_value_6m",
+            "insider_n_buys_6m", "insider_n_sells_6m",
+            "insider_top_sellers", "insider_last_transaction_date",
+        ]
+
+        cols = [c for c in base_cols if c in existing_cols] + [
+            c for c in optional_cols if c in existing_cols
+        ]
+
         rows = conn.execute(
-            """
-            SELECT
-                signal_date, ticker, universe, sector, market_cap_usd,
-                close, vol_avg_20, rsi14, mm50, mm200,
-                high_52w, low_52w, pct_below_52w_high, pct_above_52w_low,
-                momentum_score, setup_score, composite_score, rank_position,
-                screener_version
+            f"""
+            SELECT {','.join(cols)}
             FROM signals
             WHERE signal_date = ?
             ORDER BY universe, rank_position
@@ -64,14 +89,6 @@ def publish_today():
         if not rows:
             logger.warning(f"Nenhum sinal encontrado para {today}")
             sys.exit(1)
-
-        cols = [
-            "signal_date", "ticker", "universe", "sector", "market_cap_usd",
-            "close", "vol_avg_20", "rsi14", "mm50", "mm200",
-            "high_52w", "low_52w", "pct_below_52w_high", "pct_above_52w_low",
-            "momentum_score", "setup_score", "composite_score", "rank_position",
-            "screener_version",
-        ]
 
         signals = []
         for row in rows:

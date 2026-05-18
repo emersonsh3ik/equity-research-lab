@@ -28,17 +28,22 @@ source venv/bin/activate
 
 # 2. Roda o screener (sem refresh-universe — usa cache do market caps)
 echo ""
-echo "[1/3] Executando screener..."
+echo "[1/5] Executando screener..."
 python 02_screener_v2.py --top-n-per-universe 10
 
-# 3. Publica os sinais em JSON pra GitHub
+# 3. Enriquece sinais com fundamentals + insider activity
 echo ""
-echo "[2/3] Publicando sinais pra published/..."
+echo "[2/5] Enriquecendo sinais com fundamentals + insider activity..."
+python src/enrich_signals.py || echo "⚠️  Enrich falhou parcialmente (alguns tickers podem não ter dados)"
+
+# 4. Publica os sinais em JSON pra GitHub
+echo ""
+echo "[3/5] Publicando sinais pra published/..."
 python src/publish_signals.py
 
-# 4. Commit e push pro GitHub
+# 5. Commit e push pro GitHub
 echo ""
-echo "[3/3] Commit + push pro GitHub..."
+echo "[4/5] Commit + push pro GitHub..."
 TODAY=$(date +%Y-%m-%d)
 git add published/
 if git diff --cached --quiet; then
@@ -48,6 +53,11 @@ else
     git push
     echo "✓ Push concluído"
 fi
+
+# 6. Outcome tracking — mede preço dos sinais de 7/30/60/90 dias atrás
+echo ""
+echo "[5/5] Outcome tracking (mede performance de sinais antigos)..."
+python src/outcome_tracker.py || echo "⚠️  Outcome tracker falhou (esperado nos primeiros dias sem histórico)"
 
 echo ""
 echo "════════════════════════════════════════════════════════════════"
