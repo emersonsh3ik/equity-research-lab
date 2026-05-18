@@ -60,63 +60,76 @@ st.markdown(
 # ============================================================
 
 
-@st.cache_resource
-def get_connection():
-    return duckdb.connect(str(DB_PATH), read_only=True)
+def _query(sql: str, params: list | None = None):
+    """Abre conexão por query em vez de manter aberta — evita locks com backtest/cron."""
+    conn = duckdb.connect(str(DB_PATH), read_only=True)
+    try:
+        if params:
+            result = conn.execute(sql, params)
+        else:
+            result = conn.execute(sql)
+        return result.fetchall(), [d[0] for d in result.description]
+    finally:
+        conn.close()
+
+
+def _query_df(sql: str, params: list | None = None) -> pd.DataFrame:
+    """Versão que retorna DataFrame."""
+    conn = duckdb.connect(str(DB_PATH), read_only=True)
+    try:
+        if params:
+            return conn.execute(sql, params).df()
+        return conn.execute(sql).df()
+    finally:
+        conn.close()
 
 
 @st.cache_data(ttl=300)  # cache por 5 min
 def get_available_dates():
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT DISTINCT signal_date FROM signals ORDER BY signal_date DESC"
-    ).fetchall()
+    rows, _ = _query("SELECT DISTINCT signal_date FROM signals ORDER BY signal_date DESC")
     return [r[0] for r in rows]
 
 
 @st.cache_data(ttl=300)
 def get_signals_for_date(date) -> pd.DataFrame:
-    conn = get_connection()
-    return conn.execute(
-        """
-        SELECT * FROM signals
-        WHERE signal_date = ?
-        ORDER BY universe, rank_position
-        """,
+    return _query_df(
+        "SELECT * FROM signals WHERE signal_date = ? ORDER BY universe, rank_position",
         [date],
-    ).df()
+    )
 
 
 @st.cache_data(ttl=300)
 def get_ticker_history(ticker: str) -> pd.DataFrame:
-    conn = get_connection()
-    return conn.execute(
-        """
-        SELECT * FROM signals
-        WHERE ticker = ?
-        ORDER BY signal_date DESC
-        """,
+    return _query_df(
+        "SELECT * FROM signals WHERE ticker = ? ORDER BY signal_date DESC",
         [ticker.upper()],
-    ).df()
+    )
 
 
 @st.cache_data(ttl=300)
 def get_db_stats():
-    conn = get_connection()
+    rows, _ = _query(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM signals) AS total_signals,
+            (SELECT COUNT(DISTINCT ticker) FROM signals) AS unique_tickers,
+            (SELECT COUNT(DISTINCT signal_date) FROM signals) AS days_of_data,
+            (SELECT COUNT(*) FROM analyses_llm) AS total_analyses,
+            (SELECT COUNT(*) FROM signal_outcomes) AS total_outcomes
+        """
+    )
+    if not rows:
+        return {k: 0 for k in [
+            "total_signals", "unique_tickers", "days_of_data",
+            "total_analyses", "total_outcomes"
+        ]}
+    r = rows[0]
     return {
-        "total_signals": conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0],
-        "unique_tickers": conn.execute(
-            "SELECT COUNT(DISTINCT ticker) FROM signals"
-        ).fetchone()[0],
-        "days_of_data": conn.execute(
-            "SELECT COUNT(DISTINCT signal_date) FROM signals"
-        ).fetchone()[0],
-        "total_analyses": conn.execute("SELECT COUNT(*) FROM analyses_llm").fetchone()[
-            0
-        ],
-        "total_outcomes": conn.execute(
-            "SELECT COUNT(*) FROM signal_outcomes"
-        ).fetchone()[0],
+        "total_signals": r[0],
+        "unique_tickers": r[1],
+        "days_of_data": r[2],
+        "total_analyses": r[3],
+        "total_outcomes": r[4],
     }
 
 
@@ -465,8 +478,7 @@ with tab4:
 with tab5:
     st.subheader("🔄 Histórico de execuções")
 
-    conn = get_connection()
-    history = conn.execute(
+    history = _query_df(
         """
         SELECT
             signal_date,
@@ -477,7 +489,7 @@ with tab5:
         GROUP BY signal_date, universe
         ORDER BY signal_date DESC, universe
         """
-    ).df()
+    )
 
     if history.empty:
         st.info("Sem histórico ainda.")
@@ -516,13 +528,8 @@ with tab6:
     st.subheader("🔍 Análise individual de um ticker")
 
     # Lista todos os tickers que já apareceram
-    conn = get_connection()
-    all_tickers = [
-        r[0]
-        for r in conn.execute(
-            "SELECT DISTINCT ticker FROM signals ORDER BY ticker"
-        ).fetchall()
-    ]
+    rows, _ = _query("SELECT DISTINCT ticker FROM signals ORDER BY ticker")
+    all_tickers = [r[0] for r in rows]
 
     ticker = st.selectbox("Escolha um ticker", options=all_tickers)
 
@@ -640,8 +647,7 @@ with tab6:
 with tab7:
     st.subheader("📈 Outcomes (performance dos sinais antigos)")
 
-    conn = get_connection()
-    outcomes = conn.execute(
+    outcomes = _query_df(
         """
         SELECT
             days_elapsed AS dias,
@@ -656,7 +662,7 @@ with tab7:
         GROUP BY days_elapsed
         ORDER BY days_elapsed
         """
-    ).df()
+    )
 
     if outcomes.empty:
         st.info(

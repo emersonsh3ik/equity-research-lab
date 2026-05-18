@@ -315,6 +315,84 @@ QUERIES = {
             ORDER BY days_elapsed
         """,
     },
+    "backtest-summary": {
+        "desc": "Resumo dos backtests rodados",
+        "sql": """
+            SELECT
+                run_id,
+                label,
+                start_date,
+                end_date,
+                n_days,
+                n_signals,
+                ROUND(elapsed_seconds, 0) AS tempo_seg,
+                config_json
+            FROM backtest_runs
+            ORDER BY run_id DESC
+            LIMIT 20
+        """,
+    },
+    "backtest-performance": {
+        "desc": "Performance agregada por janela de TODOS os backtests",
+        "sql": """
+            SELECT
+                br.label,
+                bo.days_elapsed AS dias,
+                COUNT(*) AS n,
+                ROUND(AVG(CASE WHEN won THEN 1.0 ELSE 0.0 END) * 100, 1) AS hit_rate_pct,
+                ROUND(AVG(pct_change), 2) AS avg_return_pct,
+                ROUND(AVG(excess_return), 2) AS avg_vs_spy,
+                ROUND(STDDEV(pct_change), 2) AS std_pct,
+                ROUND(MIN(pct_change), 2) AS worst,
+                ROUND(MAX(pct_change), 2) AS best
+            FROM backtest_outcomes bo
+            JOIN backtest_signals bs USING (backtest_signal_id)
+            JOIN backtest_runs br ON br.run_id = bs.run_id
+            GROUP BY br.label, bo.days_elapsed
+            ORDER BY br.label, bo.days_elapsed
+        """,
+    },
+    "backtest-sectors": {
+        "desc": "Performance por setor no último backtest (janela 30d)",
+        "sql": """
+            SELECT
+                bs.sector,
+                COUNT(*) AS n,
+                ROUND(AVG(CASE WHEN bo.won THEN 1.0 ELSE 0.0 END) * 100, 1) AS hit_rate_pct,
+                ROUND(AVG(bo.pct_change), 2) AS avg_return_pct,
+                ROUND(AVG(bo.excess_return), 2) AS avg_vs_spy
+            FROM backtest_outcomes bo
+            JOIN backtest_signals bs USING (backtest_signal_id)
+            WHERE bs.run_id = (SELECT MAX(run_id) FROM backtest_runs)
+              AND bo.days_elapsed = 30
+            GROUP BY bs.sector
+            HAVING COUNT(*) >= 10
+            ORDER BY avg_return_pct DESC
+        """,
+    },
+    "backtest-score-buckets": {
+        "desc": "Hit rate por bucket de composite_score (janela 30d, último backtest)",
+        "sql": """
+            SELECT
+                CASE
+                    WHEN bs.composite_score >= 145 THEN 'A (145+)'
+                    WHEN bs.composite_score >= 135 THEN 'B (135-145)'
+                    WHEN bs.composite_score >= 125 THEN 'C (125-135)'
+                    WHEN bs.composite_score >= 115 THEN 'D (115-125)'
+                    ELSE 'E (<115)'
+                END AS score_bucket,
+                COUNT(*) AS n,
+                ROUND(AVG(CASE WHEN bo.won THEN 1.0 ELSE 0.0 END) * 100, 1) AS hit_rate_pct,
+                ROUND(AVG(bo.pct_change), 2) AS avg_return_pct,
+                ROUND(AVG(bo.excess_return), 2) AS avg_vs_spy
+            FROM backtest_outcomes bo
+            JOIN backtest_signals bs USING (backtest_signal_id)
+            WHERE bs.run_id = (SELECT MAX(run_id) FROM backtest_runs)
+              AND bo.days_elapsed = 30
+            GROUP BY score_bucket
+            ORDER BY score_bucket
+        """,
+    },
     "db-stats": {
         "desc": "Estatísticas gerais do banco",
         "sql": """
